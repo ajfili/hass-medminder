@@ -1,0 +1,230 @@
+alias: MedMinder
+description: ""
+trigger:
+  - platform: event
+    event_type: esphome.button_pressed
+    event_data:
+      title: medication_taken
+    id: bottle_placed
+    alias: When Bottle is placed on the reader
+  - platform: event
+    event_type: esphome.button_pressed
+    event_data:
+      title: medication_skipped
+    id: medication_skipped
+    alias: When Skip Button is Pressed
+  - platform: event
+    event_type: esphome.button_pressed
+    event_data:
+      title: disarm_requested
+    id: double_click
+    alias: When Button long-pressed
+  - platform: time
+    at: "00:01:00"
+    alias: Time to Rearm
+    id: rearm_time
+  - platform: time
+    at: "22:00:00"
+    id: sleep_on
+    alias: Enable Sleep Mode at Night
+  - platform: sun
+    event: sunrise
+    offset: 0
+    id: sleep_off
+    alias: Disable Sleep Mode at Sunrise
+  - platform: state
+    entity_id:
+      - calendar.medication_reminder
+    to: "on"
+    from: "off"
+    id: Remind_time
+    alias: When Reminder Event is Now
+  - platform: time
+    at: "11:30:00"
+    alias: If not taken by a certain time of day
+    id: forgetting_follow_up
+condition: []
+action:
+  - choose:
+      - conditions:
+          - alias: If armed and button pressed
+            condition: and
+            conditions:
+              - condition: trigger
+                id:
+                  - medication_skipped
+              - condition: state
+                entity_id: input_select.medminder_status
+                state: Armed
+        sequence:
+          - service: input_select.select_option
+            target:
+              entity_id: input_select.medminder_status
+            data:
+              option: Skipped
+            alias: Set Status to Skipped
+        alias: Skip Button Pressed
+      - conditions:
+          - condition: trigger
+            id:
+              - bottle_placed
+        sequence:
+          - if:
+              - condition: template
+                value_template: >-
+                  {{ states('input_text.current_bottle_tag') !=
+                  states('input_text.last_bottle_tag') }}
+            then:
+              - service: input_number.set_value
+                target:
+                  entity_id:
+                    - input_number.pills_remaining
+                data:
+                  value: 30
+                alias: Reset month supply
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.last_bottle_tag
+                data:
+                  value: "{{ states('input_text.current_bottle_tag') }}"
+                alias: Set last_bottle_tag value to current_bottle_tag
+              - alias: Set reminder time for 10AM 24 days from now
+                service: calendar.create_event
+                target:
+                  entity_id: calendar.medication_reminder
+                data:
+                  summary: Reminder to Refill
+                  start_date_time: >-
+                    {{ as_timestamp(now() + timedelta(days=24)) |
+                    timestamp_custom('%Y-%m-%d 10:00:00') }} 
+                  end_date_time: " {{ as_timestamp(now() + timedelta(days=24)) | timestamp_custom('%Y-%m-%d 10:10:00') }} "
+          - if:
+              - condition: state
+                entity_id: input_select.medminder_status
+                state: Armed
+            then:
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.medminder_status
+                data:
+                  option: Taken
+                alias: Set Status to Taken
+              - service: input_number.decrement
+                target:
+                  entity_id: input_number.pills_remaining
+                data: {}
+                alias: "Decrement # of Pills"
+              - if:
+                  - condition: template
+                    value_template: >-
+                      {{ states('input_text.current_bottle_tag') !=
+                      states('input_text.last_bottle_tag') }}
+                then:
+                  - service: input_number.set_value
+                    target:
+                      entity_id:
+                        - input_number.pills_remaining
+                    data:
+                      value: 30
+                    alias: Reset month supply
+                  - service: input_text.set_value
+                    target:
+                      entity_id: input_text.last_bottle_tag
+                    data:
+                      value: "{{ states('input_text.current_bottle_tag') }}"
+                    alias: Set last_bottle_tag value to current_bottle_tag
+                  - service: calendar.create_event
+                    metadata: {}
+                    data:
+                      summary: Medication Reminder
+                      start_date_time: "{{now().date()+timedelta(days=24) }} 10:00:00"
+                      end_date_time: "{{now().date()+timedelta(days=24) }} 10:01:00"
+                    target:
+                      entity_id: calendar.medication_reminder
+            else: []
+        alias: When bottle is placed on the unit
+      - conditions:
+          - condition: trigger
+            id:
+              - forgetting_follow_up
+        sequence:
+          - if:
+              - condition: state
+                entity_id: input_select.medminder_status
+                state: Armed
+            then:
+              - service: notify.mobile_app_a_j_office_kiosk
+                data:
+                  target: You Forgot!
+                  message: You forgot to take your AM pill!
+              - service: notify.mobile_app_a_j_s_iphone
+                metadata: {}
+                data:
+                  message: You forgot to take your AM pill!
+                  title: You Forgot!
+            alias: You forgot your med!
+      - conditions:
+          - condition: trigger
+            id:
+              - sleep_on
+        sequence:
+          - service: input_boolean.turn_on
+            metadata: {}
+            data: {}
+            target:
+              entity_id: input_boolean.medminder_sleep_mode
+      - conditions:
+          - condition: trigger
+            id:
+              - sleep_off
+        sequence:
+          - service: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.medminder_sleep_mode
+            data: {}
+      - conditions:
+          - condition: trigger
+            id:
+              - Remind_time
+        sequence:
+          - service: notify.mobile_app_a_j_s_iphone
+            metadata: {}
+            data:
+              message: Time to refill your script!
+              title: Refill Reminder
+      - conditions:
+          - condition: trigger
+            id:
+              - rearm_time
+        sequence:
+          - service: input_select.select_option
+            target:
+              entity_id: input_select.medminder_status
+            data:
+              option: Armed
+      - conditions:
+          - condition: trigger
+            id:
+              - double_click
+        sequence:
+          - if:
+              - condition: state
+                entity_id: input_select.medminder_status
+                state: Armed
+            then:
+              - service: input_select.select_option
+                metadata: {}
+                data:
+                  option: Disarmed
+                target:
+                  entity_id: input_select.medminder_status
+            else:
+              - service: input_select.select_option
+                metadata: {}
+                data:
+                  option: Armed
+                target:
+                  entity_id: input_select.medminder_status
+            alias: "If Armed: Disarm Else: Arm"
+        alias: Skip Button Double Clicked
+mode: single

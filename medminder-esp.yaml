@@ -1,0 +1,139 @@
+esphome:
+  name: medication-reminder
+  friendly_name: Medication Reminder
+
+esp8266:
+  board: esp01_1m
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "<redacted>"
+
+ota:
+  - platform: esphome
+    password: "<redacted>"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Medication-Reminder"
+    password: "<redacted>"
+
+# i2c configuration
+i2c:
+  sda: GPIO4
+  scl: GPIO5
+  scan: True
+
+# Block for NFC/RFID reader (PN532 module from (I used the red module that's out there.))
+pn532_i2c:
+  update_interval: 1s
+  on_tag:
+    then:
+    # Sets the current_bottle_tag values in HASS to the tag just read
+    - homeassistant.service:
+        service: input_text.set_value
+        data:
+          value: !lambda 'return x;'
+          entity_id: input_text.current_bottle_tag
+    # Sends event to HASS to trigger the automation for processing
+    - homeassistant.event:
+            event: esphome.button_pressed
+            data:
+              title: medication_taken
+
+text_sensor:
+  # Reads the current status set in HASS, and changes the lights accordingly ( Armed = Red, Taken = Green, Skipped = Blue, Disarmed = All Off)
+  - platform: homeassistant
+    id: hass_status
+    entity_id: input_select.medminder_status
+    on_value:
+      then:
+        - lambda: |-
+            id(red).turn_off();
+            id(green).turn_off();
+            id(blue).turn_off();
+            if ( id(sleep_mode).state ) {}
+            else if ( x == "Taken" ) 
+              id(green).turn_on();
+            else if ( x == "Skipped" )
+              id(blue).turn_on();
+            else if ( x == "Armed" )
+              id(red).turn_on();
+
+binary_sensor:
+  - platform: gpio  # GPIO pins for the skip button
+    pin: 
+      number: GPIO2
+      inverted: true
+      mode:
+        input: True
+        pullup: True
+    name: "Skip Button"  
+    filters:
+      - delayed_off: 10ms # Delays the turn off by 10ms to ensure HASS catches the press
+    on_click:
+    - min_length: 50ms
+      max_length: 500ms # Quick press will tell HASS we skipped today
+      then:
+        - homeassistant.event:
+            event: esphome.button_pressed
+            data:
+              title: medication_skipped
+    - min_length: 500ms
+      max_length: 5000ms # Long press (over half a second) will trigger automation for manual rearm or disarm
+      then:
+        - homeassistant.event: 
+            event: esphome.button_pressed
+            data:
+              title: disarm_requested
+  
+  # Pulls Sleep mode status from HASS and if it's on, the lights go dark
+  - platform: homeassistant
+    entity_id: input_boolean.medminder_sleep_mode
+    id: sleep_mode
+    on_state:
+      then:
+        lambda: |-
+          if ( id(sleep_mode).state) { 
+            id(red).turn_off();
+            id(green).turn_off();
+            id(blue).turn_off();
+            id(button_led).turn_on();
+          } else {
+            id(button_led).turn_off();
+            if ( id(hass_status).state == "Unarmed" ){
+              id(red).turn_off();
+              id(green).turn_off();
+              id(blue).turn_off();
+            } else if ( id(hass_status).state == "Taken" ) 
+              id(green).turn_on();
+            else if ( id(hass_status).state == "Skipped" )
+              id(blue).turn_on();
+            else if ( id(hass_status).state == "Armed" )
+              id(red).turn_on();
+          }         
+   
+# Sets up the GPIO pins for the LEDS
+switch:
+  - platform: gpio
+    pin: GPIO14
+    id: red
+  - platform: gpio
+    pin: GPIO12
+    id: green
+  - platform: gpio
+    pin: GPIO13
+    id: blue
+  - platform: gpio
+    pin: GPIO15
+    id: button_led
+    name: "Button LED"
+    restore_mode: RESTORE_DEFAULT_ON
